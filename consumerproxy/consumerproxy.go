@@ -17,11 +17,16 @@ func init() {
 //Callback redis操作的回调函数
 type Callback func(cli *kafka.Consumer) error
 
+type OnMsgCallback func(evt *kafka.Message)
+type OnErrorCallback func(err kafka.Error)
+
 //ConsumerProxy redis客户端的代理
 type ConsumerProxy struct {
 	*kafka.Consumer
-	Opt       Options
-	callBacks []Callback
+	Opt           Options
+	callBacks     []Callback
+	msgCallback   OnMsgCallback
+	errorCallback OnErrorCallback
 }
 
 // New 创建一个新的数据库客户端代理
@@ -93,6 +98,65 @@ func (proxy *ConsumerProxy) Regist(cb ...Callback) error {
 	}
 	proxy.callBacks = append(proxy.callBacks, cb...)
 	return nil
+}
+
+//OnMessage 注册消息处理函数
+//@params cb OnMsgCallback 消息处理的回调
+func (proxy *ConsumerProxy) OnMessage(cb OnMsgCallback) error {
+	if proxy.msgCallback != nil {
+		return ErrProxyAllreadySettedCallback
+	}
+	proxy.msgCallback = cb
+	return nil
+}
+
+//OnMessage 注册消息处理函数
+//@params cb OnMsgCallback 消息处理的回调
+func (proxy *ConsumerProxy) OnError(cb OnErrorCallback) error {
+	if proxy.errorCallback != nil {
+		return ErrProxyAllreadySettedCallback
+	}
+	proxy.errorCallback = cb
+	return nil
+}
+
+//Watch 开始监听kafka
+func (proxy *ConsumerProxy) Watch() func() {
+	stopCh := make(chan struct{}, 1)
+	go func() {
+		run := true
+		for run {
+			select {
+			case <-stopCh:
+				Logger.Info("Stop Watching")
+				run = false
+			case ev := <-proxy.Events():
+				switch e := ev.(type) {
+				case kafka.AssignedPartitions:
+					Logger.Error("Get AssignedPartitions event", log.Dict{"event": e})
+					proxy.Assign(e.Partitions)
+				case kafka.RevokedPartitions:
+					Logger.Error("Get RevokedPartitions event", log.Dict{"event": e})
+					proxy.Unassign()
+				case *kafka.Message:
+					if proxy.msgCallback == nil {
+						Logger.Info("Get Message", log.Dict{"topic": *e.TopicPartition.Topic, "key": string(e.Key), "value": string(e.Value)})
+					} else {
+						proxy.msgCallback(e)
+					}
+				case kafka.PartitionEOF:
+					Logger.Info("Reached", log.Dict{"event": e})
+				case kafka.Error:
+					if proxy.errorCallback == nil {
+						Logger.Error("Get error", log.Dict{"error": e})
+					} else {
+						proxy.errorCallback(e)
+					}
+				}
+			}
+		}
+	}()
+	return func() { close(stopCh) }
 }
 
 //Default 默认的kafka Consumer代理对象
