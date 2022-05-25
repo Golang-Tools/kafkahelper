@@ -44,7 +44,7 @@ func New() *ProducerProxy {
 
 //IsOk 检查代理是否已经可用
 func (proxy *ProducerProxy) IsOk() bool {
-	return proxy.Producer == nil
+	return proxy.Producer != nil
 }
 
 //IsWatchingDeliver( 检查代理是否正在监听发送情况
